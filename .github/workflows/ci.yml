@@ -108,3 +108,38 @@ jobs:
           docker push "${IMAGE_NAME}:${GITHUB_SHA}" | tee push-sha.log
           docker push "${IMAGE_NAME}:latest" | tee push-latest.log
           grep -E 'digest: sha256:' push-sha.log push-latest.log
+  deploy:
+    needs: image
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, devops-vm]
+    permissions:
+      contents: read
+    concurrency:
+      group: deploy-devops-vm
+      cancel-in-progress: false
+    env:
+      VM_HOST: 192.168.56.101
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Deploy with Ansible
+        working-directory: ansible
+        run: |
+          ansible-playbook site.yml -e "app_tag=${GITHUB_SHA}"
+      - name: Check through Nginx
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error \
+            --retry 10 --retry-delay 2 --retry-all-errors \
+            "http://${VM_HOST}/health" --output health.json
+          cat health.json
+          echo
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          payload = json.loads(Path("health.json").read_text(encoding="utf-8"))
+          assert payload == {"status": "ok"}, f"unexpected /health payload: {payload}"
+          print("health check through nginx: ok")
+          PY
